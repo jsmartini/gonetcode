@@ -15,6 +15,7 @@ type client struct {
 	IOw      *bufio.Writer
 	IOrw     *bufio.ReadWriter
 	listener net.Listener
+	sconn    net.Conn
 	errc     error
 	errs     error
 }
@@ -27,20 +28,39 @@ type network interface {
 	recv()
 }
 
-func (c client) server(status chan string) {
-	c.listener, c.errs = net.Listen("tcp", fmt.Sprintf("%s:%s", c.hostname, c.port))
+func (c client) nonblockingaccept(status chan string) {
+	c.sconn, c.errs = c.listener.Accept()
+	status <- "done"
+	return
+}
+
+func (c client) server(status chan string, log chan string) {
+	c.listener, c.errs = net.Listen("tcp", "127.0.0.1:"+c.port)
 	if c.errs != nil {
+		log <- fmt.Sprintf("%s", c.errs)
 		status <- "sDone"
 		return
 	}
-	var conn net.Conn
-	conn, c.errs = c.listener.Accept()
-	if c.errs != nil {
-		status <- "sDone"
-		return
+	fmt.Println("Waiting For Connection")
+	timeout := time.Now().Add(time.Duration(30) * time.Second)
+	accept_status := make(chan string)
+	go c.nonblockingaccept(accept_status)
+	flag := true
+	for flag {
+		select {
+		case _ = <-accept_status:
+			flag = false
+		default:
+			if time.Now().After(timeout) {
+				c.errs = fmt.Errorf("Timeout")
+				status <- "sDone"
+				return
+			}
+		}
 	}
-	c.IOr = bufio.NewReader(conn)
+	c.IOr = bufio.NewReader(c.sconn)
 	status <- "sDone"
+	log <- "Connection Accepted\n"
 	return
 }
 
@@ -50,11 +70,14 @@ func (c client) client(status chan string, log chan string) {
 		conn, c.errc = net.DialTimeout("tcp", fmt.Sprintf("%s:%s", c.hostname, c.port), time.Duration(50)*time.Millisecond)
 		if c.errc != nil {
 			log <- fmt.Sprintf("\rTry: %d", i)
+		} else {
+			break
 		}
 	}
 	if c.errc != nil {
-		fmt.Println("\nExiting:\t%S", c.errc)
-		os.Exit(-1)
+		log <- "\rConnection Failed"
+		status <- "cDone"
+		return
 	}
 	log <- fmt.Sprintln("Connected!")
 	c.IOw = bufio.NewWriter(conn)
@@ -65,14 +88,16 @@ func (c client) client(status chan string, log chan string) {
 func (c client) handshake() error {
 	log, status := make(chan string), make(chan string)
 	go c.client(status, log)
-	go c.server(status)
+	go c.server(status, log)
 	i := 0
 	for i < 2 {
 		select {
 		case status_update := <-status:
 			if status_update == "cDone" {
+
 				i++
 			} else if status_update == "sDone" {
+				fmt.Println("Server Done")
 				i++
 			}
 		case log_update := <-log:
