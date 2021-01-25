@@ -23,7 +23,7 @@ type network interface {
 }
 
 func (c client) handshake() error {
-	c.conn, c.err = net.DialTimeout("tcp", fmt.Sprintf("%s:%s", c.hostname, c.port), time.Duration(50)*time.Millisecond)
+	c.conn, c.err = net.DialTimeout("tcp", fmt.Sprintf("%s:%s", c.hostname, c.port), time.Duration(120)*time.Second)
 	if c.err != nil {
 		return fmt.Errorf("Could not Connect:\t%s", c.err)
 	}
