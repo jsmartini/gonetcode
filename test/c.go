@@ -27,36 +27,60 @@ type network interface {
 	recv()
 }
 
-func (c client) server() {
+func (c client) server(status chan string) {
 	c.listener, c.errs = net.Listen("tcp", fmt.Sprintf("%s:%s", c.hostname, c.port))
 	if c.errs != nil {
+		status <- "sDone"
 		return
 	}
 	var conn net.Conn
 	conn, c.errs = c.listener.Accept()
 	if c.errs != nil {
+		status <- "sDone"
 		return
 	}
 	c.IOr = bufio.NewReader(conn)
+	status <- "sDone"
+	return
 }
-func (c client) client() {
+
+func (c client) client(status chan string, log chan string) {
 	var conn net.Conn
 	for i := 0; i <= 500; i++ {
-		conn, c.errc = net.DialTimeout("tcp", fmt.Sprintf("%s:%s", c.hostname, c.port), time.Duration(300)*time.Millisecond)
+		conn, c.errc = net.DialTimeout("tcp", fmt.Sprintf("%s:%s", c.hostname, c.port), time.Duration(50)*time.Millisecond)
 		if c.errc != nil {
-			fmt.Printf("\rTry: %d", i)
+			log <- fmt.Sprintf("\rTry: %d", i)
 		}
 	}
-	fmt.Println("Connected!")
 	if c.errc != nil {
-		return
+		fmt.Println("\nExiting:\t%S", c.errc)
+		os.Exit(-1)
 	}
+	log <- fmt.Sprintln("Connected!")
 	c.IOw = bufio.NewWriter(conn)
+	status <- "cDone"
+	return
 }
 
 func (c client) handshake() error {
-	go c.client()
-	go c.server()
+	log, status := make(chan string), make(chan string)
+	go c.client(status, log)
+	go c.server(status)
+	i := 0
+	for i < 2 {
+		select {
+		case status_update := <-status:
+			if status_update == "cDone" {
+				i++
+			} else if status_update == "sDone" {
+				i++
+			}
+		case log_update := <-log:
+			fmt.Print(log_update)
+		default:
+			continue
+		}
+	}
 	if c.errs != nil || c.errc != nil {
 		return fmt.Errorf("Errors:\n:\tServer:\t%s\n:\tClient:\t%s\n", c.errs, c.errc)
 	}
@@ -64,27 +88,32 @@ func (c client) handshake() error {
 	return nil
 }
 
-func (c client) send() {
+func (c client) send(s chan error) {
 	var msg string
-	fmt.Scanln("[?>", msg)
+	fmt.Printf("[?>")
+	_, err := fmt.Scanln(&msg)
+	if err != nil {
+		s <- err
+	}
 	if msg == "exit" {
 		os.Exit(0)
 	}
 	n, err := c.IOrw.WriteString(msg + "\n")
 	if err != nil {
-		return
+		s <- err
 	}
 	fmt.Println("Wrote %d bytes to target Successfully", n)
 	return
 }
 
-func (c client) recv() {
-	msg, err := c.IOrw.ReadString('\n')
-	if err != nil {
-		return
+func (c client) recv(s chan error, o chan string) {
+	for {
+		msg, err := c.IOrw.ReadString('\n')
+		if err != nil {
+			s <- err
+		}
+		o <- fmt.Sprintln("[%s:%s> %s", c.hostname, c.port, msg)
 	}
-	fmt.Println("[%s:%s> %s", c.hostname, c.port, msg)
-	return
 }
 
 func main() {
@@ -101,8 +130,16 @@ func main() {
 		fmt.Println("Exiting:\t%s", err)
 		os.Exit(-1)
 	}
+	status := make(chan error)
+	output := make(chan string)
+	go target.recv(status, output)
 	for {
-		go target.recv()
-		go target.send()
+		target.send(status)
+		select {
+		case state := <-status:
+			fmt.Println(state)
+		case out := <-output:
+			fmt.Println(out)
+		}
 	}
 }
